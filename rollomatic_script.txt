@@ -1,0 +1,137 @@
+!Thomas Diebel, 14. April 2020
+!Dieses Script hat die Aufgabe den 8-fach Schaltaktor Ausgang in einen virtuellen Rolloaktor zu verwandeln
+!*******************************************************************************************************************************
+!#SCRIPT:
+!#Bedingungen:
+!#CUxD wurde so konfiguriert, das virtuelle Rolloaktoren simuliert werden, deren Behanghöhe abgefragt und angefahren wird
+!#Diverse Systemvariablen müssen deklariert sein. Siehe Scriptcode.
+!*******************************************************************************************************************************
+
+
+!#Variablen deklarieren und initialisieren
+!*******************************************************************************************************************************************************
+!Die folgen Variablen müssen angepasst werden, wenn andere Rollos benutzt werden. Alles andere kann bleiben wie es ist.:-)
+!*******************************************************************************************************************************************************
+string	sSYSBEHANG		=	"sys:Rollo_AZ_links_Behanghoehe";			!Systemvariable, in der die aktuelle Behanghöhe gespeichert ist					
+string	sUP				=	"34";										!Jeweiliger Kanal, der das Relais zum rauf fahren schaltet
+string	sDOWN			=	"38";										!Jeweiliger Kanal, der das Relais zum runter fahren schaltet
+string	sCUxD			=	"CUxD.CUX4000001:1";											!Der simulierte Rollaktor Kanal im CUxD
+string	sDevice			=	"HmIP-RF.000D18A9A5ACC0:";					!String mit der Geräteadresse des Schaltaktors
+string	sCOT			=	".ON_TIME";									!Command ON_TIME ist rein real und legt die Einschaltzeit des Aktorkanals festlegen
+string	sCS				=	".STATE";									!Command STATE  ist ein boolean und schaltet die Aktor ein und aus. true = EIN
+!*******************************************************************************************************************************************************
+real	r_rollokonst_u	=	27.5;										!Zeit die das Rollo zum vollen rauf fahren benötigt
+real	r_rollokonst_d	=	23.0;										!Zeit die das Rollo zum vollen runter fahren benötigt
+real	r_rollooffset100=	-0.045;										!Prozentualer Fahrwegoffset, bei Start ganz oben
+real	r_rollooffset0	=	0.129;										!Prozentualer Fahrwegoffset, bei Start ganz unten
+real 	r_rollokal		=	3.0;										!Kalibrierzeit, bei Anfahrt der Endlagen
+!*******************************************************************************************************************************************************
+real	r_fahrzeit		=	0.0;
+real	r_behang_ist	=	0.0;
+real	r_behang_soll	=	0.0;
+real	r_behang_delta	=	0.0;
+real	r_rollokonst	=	0.0;
+real	r_rollooffset	=	0.0;
+
+
+boolean	debug 			=	false;										!Bei debug werden Ausgaben zur Fehlersuche aktiviert
+boolean life			= 	true;										!Bei life wird der Rollokanal physisch geschaltet und die neue Rollo Istposition in die Sysvar geschrieben.
+boolean hoch			=	false;										!Hilfsvariable zum festlegen der Fahrtrichtung
+boolean rollofahrt		=	true;										!Bool zur Kontrolle ob das jeweiliuge Rollo gerade fährt
+
+var sysvar_sys_behang	=	dom.GetObject(sSYSBEHANG);					!Referenz auf sysvar, in der die Behanghöhe gespeichert wird anlegen
+var sysvar_Level		=	dom.GetObject(sCUxD + ".LEVEL");			!Referenz auf  Rollokanals holen. Dieses bildet die Behanghöhe in % ab. Bereich 0.000 bis 1.000
+
+var cUPTIME				=	dom.GetObject(sDevice+sUP+sCOT);			!Referenzen auf die Controleigenschaften der Kanäle anlegen.
+var cUPSTATE			=	dom.GetObject(sDevice+sUP+sCS);
+var cDOWNTIME			=	dom.GetObject(sDevice+sDOWN+sCOT);
+var cDOWNSTATE			=	dom.GetObject(sDevice+sDOWN+sCS);
+var cA;
+var cB;
+
+!*******************************************************************************************************************************************************
+!#####Holen der Werte aus den Systemvariablen und Aktoren und durchführen einiger Berechnungen
+!*******************************************************************************************************************************************************
+r_behang_ist			=	sysvar_sys_behang.State() / 100;			!Ist Behanghöhe holen und durch 100 Teilen, da prozentuale Speicherung in der Sysvar zur einfacheren Lesbarkeit von außen
+	if (debug){WriteLine("azl ist: " + r_behang_ist);	}
+
+r_behang_soll		=	sysvar_Level.State();							!Wert der soll Behanghöhe aus den vom CUxD simulierten Rolloaktoren auslesen
+	if (debug){WriteLine("azl soll: " + r_behang_soll);}
+
+r_behang_soll		=	r_behang_soll.Round(1);							!Runden der Sollwerte auf die Zehnerstelle
+	if (debug){WriteLine("azl soll gerundet: " + r_behang_soll);}
+
+r_behang_delta		=	r_behang_ist - r_behang_soll;					!Berechnung der Abweichung zwischen soll und ist
+	if (debug){WriteLine("azl delta: " + r_behang_delta);}
+
+!*******************************************************************************************************************************************************
+!#####Sicherheitsprüfung. Steht das Rollo??? Wenn nicht ABBRUCH des Scripts und Reset der Rollo Sollbehanghöhe!!!
+!*******************************************************************************************************************************************************
+rollofahrt = cUPSTATE.State() || cDOWNSTATE.State();
+	if (debug){WriteLine("Rollofahrt???: ");
+		WriteLine(rollofahrt);
+		}
+if (rollofahrt){
+	sysvar_Level.State(r_behang_ist);
+	r_behang_delta = 0.0;
+	}
+
+!*******************************************************************************************************************************************************
+!#####Ansteuerung der jeweiligen Aktoren. Aktive Ausgabe, bei life
+!*******************************************************************************************************************************************************
+if (r_behang_delta == 0){quit;}												!Prüfung der Fahrtnotwendigkeit des Rollos
+	
+
+	hoch = false;														!Prüfung der benötigen Fahrrichtung anhand des Vorzeichens 
+	if (r_behang_delta < 0){											!Negatives delta? 
+		hoch = true;													!Rollo muss hoch gefahren werden.
+		r_behang_delta = r_behang_delta * -1.0;							!Für die weitere Berechnung ist das Vorzeichen störend, darum raus rechnen
+		}
+			if (debug){WriteLine("Fahrtrichtung hoch?: ");
+				WriteLine(hoch);
+				}
+
+	if (hoch){															!#Objektreferenzen holen für Fahrzeit und Freigabe, in Abhängigkeit von der nötigen Fahrtrichtun
+		cA = cUPTIME;					
+		cB = cUPSTATE;
+		r_rollokonst = r_rollokonst_u;
+		}
+		else{
+		cA = cDOWNTIME;
+		cB = cDOWNSTATE;
+		r_rollokonst = r_rollokonst_d;
+		}
+			if (debug){
+				WriteLine("Rollo wird nun bei boolean life = true für x Sekunden gefahren: " + r_fahrzeit);
+				WriteLine("LIFE ?:");
+				WriteLine(life);
+				}
+	
+	r_fahrzeit = r_rollokonst * r_behang_delta;							!Berechnung der Fahrzeit	
+		if (debug){WriteLine("az_l fahrzeit: " + r_fahrzeit);}
+	
+	!r_fahrzeit = r_fahrzeit.Round(0);									!Rundung der Fahrzeit, es sollen hier nur ganze Sekunden gefahren werden
+	!	if (debug){WriteLine("az_l fahrzeit gerundet: " + r_fahrzeit);}
+	
+	if (r_behang_soll == 1.0){r_fahrzeit = r_fahrzeit + r_rollokal;}	!Kalibrierfahrt bei 100%
+	if (r_behang_soll == 0.0){r_fahrzeit = r_fahrzeit + r_rollokal;}	!oder 0% Behanghöhe.
+	
+	if (r_behang_ist == 0.0){											!Offsetkorrektur bei Start von ganz unten
+		r_rollooffset = r_rollooffset0 * r_rollokonst;
+		}
+	if (r_behang_ist == 1.0){											!Offsetkorrektur bei Start ganz oben
+		r_rollooffset = r_rollooffset100 * r_rollokonst;
+		}																
+		
+		if (debug){WriteLine("Kalibrierzeit?: " + r_fahrzeit);
+			WriteLine("Offsetzeit?: " + r_rollooffset);
+			}
+	r_fahrzeit = r_fahrzeit + r_rollooffset;	
+		
+	if (life){
+		cA.State(r_fahrzeit);											!Setzen der Einschaltzeit des Aktors
+		cB.State(true);													!und Einschalten. Ausgeschaltet wird automatisch nach Ablauf der Fahrzeit durch den Aktor
+		sysvar_sys_behang.State(r_behang_soll * 100)};					!Neuen Behang-Istwert setzen. In dieser Variante der Rollosteuerung ist noch keine Fahrüberwachung implementiert, sonst könnte das entfallen
+
+
+!ENDE
